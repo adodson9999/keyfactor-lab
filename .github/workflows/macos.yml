@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────
+# macos.yml — Runs certificate tests on macOS ONLY
+# Triggered when code is pushed to the ci/macos branch
+# ─────────────────────────────────────────────────────────────────
+
+name: "CI — macOS"
+
+on:
+  # Only triggers when the ci/macos branch receives a push
+  push:
+    branches: [ ci/macos ]
+  # Also triggers on pull requests targeting ci/macos
+  pull_request:
+    branches: [ ci/macos ]
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  test-macos:
+    name: "macOS — Python ${{ matrix.python-version }}"
+    runs-on: macos-latest        # GitHub spins up a macOS VM
+
+    strategy:
+      fail-fast: false           # Keep running even if one version fails
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      # Check out your repo code onto the macOS VM
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install the Python version being tested
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # macOS comes with OpenSSL pre-installed — just verify it works
+      - name: Verify OpenSSL
+        run: openssl version
+
+      # Install Python test dependencies
+      - name: Install dependencies
+        run: pip install pytest cryptography pytest-html
+
+      # Run the certificate tests and generate an HTML report
+      - name: Run certificate tests
+        run: >
+          pytest test_certs.py -v
+          --tb=short
+          --html=report-macos-py${{ matrix.python-version }}.html
+          --self-contained-html
+
+      # Upload the HTML report so it can be downloaded from GitHub
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()             # Upload even if tests failed
+        with:
+          name: report-macos-py${{ matrix.python-version }}
+          path: report-macos-py${{ matrix.python-version }}.html
+          retention-days: 30

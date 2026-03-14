@@ -1,0 +1,117 @@
+# ─────────────────────────────────────────────────────────────────
+# all_platforms.yml — Runs certificate tests on ALL platforms
+# Triggered when code is pushed to ci/all-platforms OR main
+# This is the master pipeline — spins up 6 VMs simultaneously
+# ─────────────────────────────────────────────────────────────────
+
+name: "CI — All Platforms"
+
+on:
+  # Triggers on the ci/all-platforms branch
+  push:
+    branches: [ ci/all-platforms, main ]
+  # Also triggers on pull requests targeting main
+  pull_request:
+    branches: [ main ]
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  test-all:
+    name: "${{ matrix.os }} — Python ${{ matrix.python-version }}"
+
+    strategy:
+      # Never stop early — always get results from ALL platform/version combos
+      fail-fast: false
+
+      matrix:
+        # GitHub spins up one VM for every combination below
+        # 3 operating systems × 2 Python versions = 6 VMs running simultaneously
+        os:
+          - macos-latest        # Apple macOS
+          - windows-latest      # Microsoft Windows
+          - ubuntu-latest       # Linux (Ubuntu)
+        python-version:
+          - "3.11"
+          - "3.12"
+
+    # The OS for each VM comes from the matrix above
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # Check out your repo code onto the VM
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install the correct Python version on this VM
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Install OpenSSL on Linux only
+      # 'if: runner.os == Linux' means this step is skipped on macOS and Windows
+      - name: Install OpenSSL (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y openssl
+
+      # Install OpenSSL on Windows only
+      # 'if: runner.os == Windows' means this step is skipped on macOS and Linux
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        run: choco install openssl -y
+
+      # Verify OpenSSL is available — use bash shell so it works on all 3 OSes
+      - name: Verify OpenSSL
+        shell: bash
+        run: openssl version
+
+      # Upgrade pip to avoid compatibility warnings
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      # Install all Python packages needed by the test script
+      - name: Install dependencies
+        run: pip install pytest cryptography pytest-html
+
+      # Run all 5 certificate tests
+      # The report filename includes OS and Python version so reports
+      # from all 6 VMs are uniquely named and don't overwrite each other
+      - name: Run certificate tests
+        shell: bash
+        run: >
+          pytest test_certs.py -v
+          --tb=short
+          --html=report-${{ matrix.os }}-py${{ matrix.python-version }}.html
+          --self-contained-html
+
+      # Upload each VM's report as a downloadable artifact on GitHub
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()             # Upload even if some tests failed
+        with:
+          name: report-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: report-${{ matrix.os }}-py${{ matrix.python-version }}.html
+          retention-days: 30
+
+  # ── SUMMARY JOB ──────────────────────────────────────────────
+  # This job runs AFTER all the test jobs finish
+  # It posts a summary showing pass/fail for every platform combo
+  summary:
+    name: "Pipeline Summary"
+    runs-on: ubuntu-latest
+
+    # Wait for all test jobs to complete before running this
+    needs: test-all
+
+    # Run this even if some test jobs failed — we want the summary regardless
+    if: always()
+
+    steps:
+      - name: Print summary
+        run: |
+          echo "================================================"
+          echo "  Keyfactor Lab — Certificate Test Pipeline"
+          echo "  All platform results collected."
+          echo "  Download artifacts above to view HTML reports."
+          echo "================================================"
