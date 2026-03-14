@@ -47,21 +47,46 @@ CERT_FILE = "my_cert.pem"
 # File name the generated private key will be saved as
 KEY_FILE = "my_key.pem"
 
+# Temporary OpenSSL config file used during cert generation
+# This approach works on all platforms unlike the -subj flag
+CONFIG_FILE = "openssl_keyfactor.cnf"
+
 # How many days the generated certificate should be valid
 CERT_VALIDITY_DAYS = 365
-
-# The identity info embedded inside the certificate
-# CN = Common Name (CA name), O = Organization, C = Country
-CERT_SUBJECT = "/CN=KeyfactorLab-RootCA/O=KeyfactorLab/C=US"
 
 # How many days before expiry we consider a cert "expiring soon"
 EXPIRY_WARNING_DAYS = 30
 
 # The CA name our tests expect to find inside the certificate
+# Must match the CN value in the config content below
 EXPECTED_ISSUER = "KeyfactorLab-RootCA"
 
 # Minimum acceptable RSA key size in bits
 MIN_KEY_SIZE = 2048
+
+# The OpenSSL config file content that defines the certificate fields
+# Using a config file instead of -subj flag because Windows OpenSSL
+# handles the -subj flag inconsistently across different builds
+# CN = Common Name (the CA name), O = Organization, C = Country
+OPENSSL_CONFIG = """
+[req]
+default_bits       = 2048
+prompt             = no
+default_md         = sha256
+distinguished_name = dn
+x509_extensions    = v3_ca
+
+[dn]
+CN = KeyfactorLab-RootCA
+O  = KeyfactorLab
+C  = US
+
+[v3_ca]
+subjectKeyIdentifier   = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints       = critical, CA:true
+keyUsage               = critical, digitalSignature, cRLSign, keyCertSign
+"""
 
 
 # ─────────────────────────────────────────────
@@ -94,10 +119,15 @@ def check_openssl():
 
 def generate_cert():
     """
-    Runs the OpenSSL command to generate a self-signed certificate.
-    Uses subprocess to call OpenSSL exactly as you would in the terminal.
-    Saves two files: CERT_FILE (the certificate) and KEY_FILE (the private key).
-    Raises a RuntimeError with a clear message if generation fails.
+    Generates a self-signed certificate using an OpenSSL config file.
+
+    Why a config file instead of the -subj flag?
+    The -subj flag (e.g. -subj '/CN=KeyfactorLab-RootCA') works fine on
+    macOS and Linux but behaves inconsistently on Windows depending on which
+    OpenSSL build is installed. Some Windows builds ignore the subject entirely,
+    leaving the issuer field blank. Writing the subject fields to a config file
+    and passing it with -config bypasses all shell escaping issues and works
+    identically on every operating system.
     """
     current_os = detect_os()
 
@@ -107,27 +137,32 @@ def generate_cert():
     print(f"  OS detected  : {current_os.upper()}")
     print(f"  Generating   : {CERT_FILE}")
 
-    # Build the OpenSSL command as a list — safer than a single string
-    # Each item is one part of the command, just like typing it in Terminal
+    # Write the OpenSSL config to a temporary file on disk
+    # OpenSSL reads this file to know what fields to put in the certificate
+    with open(CONFIG_FILE, "w") as f:
+        f.write(OPENSSL_CONFIG)
+
+    # Build the OpenSSL command using -config instead of -subj
+    # Every field (CN, O, C) comes from the config file — no shell escaping needed
     command = [
-        "openssl", "req",       # certificate request operation
-        "-x509",                # make it self-signed (no external CA needed)
-        "-newkey", "rsa:2048",  # generate a new 2048-bit RSA key pair
-        "-keyout", KEY_FILE,    # save the private key to this file
-        "-out", CERT_FILE,      # save the certificate to this file
-        "-days", str(CERT_VALIDITY_DAYS),  # how long the cert is valid
-        "-nodes",               # no password on the private key (easier for testing)
-        "-subj", CERT_SUBJECT   # the identity info to embed in the cert
+        "openssl", "req",
+        "-x509",                            # make it self-signed (no external CA)
+        "-newkey", "rsa:2048",              # generate a new 2048-bit RSA key pair
+        "-keyout", KEY_FILE,                # save the private key to this file
+        "-out", CERT_FILE,                  # save the certificate to this file
+        "-days", str(CERT_VALIDITY_DAYS),   # how long the cert is valid
+        "-nodes",                           # no password on the private key
+        "-config", CONFIG_FILE              # read subject fields from config file
     ]
 
-    # Windows sometimes needs forward slashes escaped in the subject string
-    if current_os == "windows":
-        command[-1] = CERT_SUBJECT.replace("/", "//")
-
-    # Run the command — capture output so errors display cleanly
+    # Run the OpenSSL command and capture all output for error reporting
     result = subprocess.run(command, capture_output=True, text=True)
 
-    # A non-zero return code means OpenSSL encountered an error
+    # Always clean up the temporary config file, even if generation failed
+    if os.path.exists(CONFIG_FILE):
+        os.remove(CONFIG_FILE)
+
+    # A non-zero return code means OpenSSL failed — show the error clearly
     if result.returncode != 0:
         raise RuntimeError(
             f"\nOpenSSL failed (exit code {result.returncode}):\n{result.stderr}"
@@ -145,18 +180,18 @@ def delete_cert_files():
     and avoid leaving sensitive private key files sitting around.
     """
     for filename in [CERT_FILE, KEY_FILE]:
-        if os.path.exists(filename):       # only delete if the file actually exists
-            os.remove(filename)            # permanently delete the file
+        if os.path.exists(filename):        # only delete if the file exists
+            os.remove(filename)             # permanently delete the file
             print(f"  Deleted: {filename}")
 
 
 def load_cert(path):
     """
     Opens a .pem certificate file and returns a parsed certificate object.
-    All test functions below call this to get the cert they need to inspect.
+    All test functions call this to load the cert they need to inspect.
     path: string file path to the certificate file
     """
-    with open(path, "rb") as f:           # 'rb' = read binary — certs are binary files
+    with open(path, "rb") as f:             # 'rb' = read binary — certs are binary
         return x509.load_pem_x509_certificate(f.read(), default_backend())
 
 
@@ -167,22 +202,23 @@ def load_cert(path):
 @pytest.fixture(scope="session", autouse=True)
 def setup_certificate():
     """
-    A pytest fixture that:
-      - Runs ONCE before the first test (generates the certificate)
-      - Runs ONCE after the last test (deletes the certificate files)
+    A pytest fixture that runs automatically for every test session.
 
-    'scope=session' means it runs once per pytest session, not once per test.
-    'autouse=True' means every test uses this fixture automatically — no need
-    to manually reference it in each test function.
+    BEFORE tests (setup):
+      - Checks OpenSSL is installed
+      - Generates the certificate and key files
 
-    The 'yield' keyword is the dividing line:
-      - Everything BEFORE yield = setup (runs before tests)
-      - Everything AFTER yield = teardown (runs after tests finish)
+    AFTER tests (teardown):
+      - Deletes the certificate and key files
+
+    scope='session'  = runs once per pytest session, not once per test
+    autouse=True     = applies to all tests automatically, no need to reference it
+    yield            = the dividing line between setup and teardown
     """
 
-    # ── SETUP: runs before any tests ──────────────────────────────
+    # ── SETUP ─────────────────────────────────────────────────────
 
-    # First check that OpenSSL is available on this machine
+    # Verify OpenSSL is available before trying to use it
     if not check_openssl():
         raise RuntimeError(
             "\nOpenSSL not found. Please install it:\n"
@@ -191,12 +227,12 @@ def setup_certificate():
             "  Windows:  https://slproweb.com/products/Win32OpenSSL.html"
         )
 
-    # Generate the certificate — all tests depend on this file existing
+    # Generate the certificate — all 5 tests depend on this file existing
     generate_cert()
 
-    # ── Hand control over to the tests ────────────────────────────
+    # ── TESTS RUN HERE ────────────────────────────────────────────
     yield
-    # ── TEARDOWN: runs after all tests finish ──────────────────────
+    # ── TEARDOWN ──────────────────────────────────────────────────
 
     print(f"\n{'='*55}")
     print("  Cleaning up generated files...")
@@ -212,11 +248,11 @@ def test_cert_not_expired():
     """
     TEST 1: Verify the certificate has not already expired.
     An expired cert causes immediate failures everywhere — SSL errors,
-    broken logins, failed API calls. This is the first thing to check.
+    broken logins, failed API calls. This is the most basic health check.
     """
     cert = load_cert(CERT_FILE)
 
-    # The cert's expiry date must be in the future (greater than right now)
+    # The cert's expiry date must be later than right now
     assert cert.not_valid_after_utc > datetime.now(timezone.utc), \
         "FAIL: Certificate is already expired — immediate renewal required!"
 
@@ -224,40 +260,45 @@ def test_cert_not_expired():
 def test_cert_issued_by_expected_ca():
     """
     TEST 2: Verify the cert was issued by our trusted CA.
-    In PKI environments, every cert must come from a known, trusted authority.
-    A cert from an unexpected issuer is a red flag for misconfiguration or
-    a security incident — exactly what Keyfactor monitors for.
+    In PKI environments, every cert must trace back to a known, trusted
+    Certificate Authority. An unexpected issuer is a red flag for
+    misconfiguration or a security incident.
 
-    NOTE: Windows OpenSSL formats the subject string differently than macOS/Linux.
-    Rather than extracting just the CN field (which fails on Windows when the
-    field list is empty), we convert the entire issuer to a string and check
-    that our expected CA name appears anywhere inside it. This works reliably
-    across all operating systems.
+    We use rfc4514_string() to convert the issuer to a readable string
+    and check that our CA name appears inside it. This is more reliable
+    than get_attributes_for_oid() which fails on some Windows OpenSSL builds
+    when the CN field list comes back empty.
     """
     cert = load_cert(CERT_FILE)
 
-    # Convert the full issuer object to a string representation
-    # This produces something like: "CN=KeyfactorLab-RootCA,O=KeyfactorLab,C=US"
-    # We use this approach instead of get_attributes_for_oid() because Windows
-    # OpenSSL can format the subject differently, causing the CN list to be empty
+    # Convert the issuer to an RFC4514 string like "CN=KeyfactorLab-RootCA,O=KeyfactorLab,C=US"
+    # This format is consistent and readable across all platforms
     issuer_string = cert.issuer.rfc4514_string()
 
-    # Check that our expected CA name appears anywhere in the issuer string
-    # This is cross-platform safe — works on macOS, Windows, and Linux
-    assert EXPECTED_ISSUER in issuer_string, \
-        f"FAIL: Expected '{EXPECTED_ISSUER}' not found in issuer: '{issuer_string}'"
+    # Also check each attribute individually as a fallback
+    # get_attributes_for_oid returns a list — we check if it's non-empty first
+    cn_attributes = cert.issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+
+    if cn_attributes:
+        # If CN attribute exists, verify it matches exactly
+        assert cn_attributes[0].value == EXPECTED_ISSUER, \
+            f"FAIL: CN is '{cn_attributes[0].value}' — expected '{EXPECTED_ISSUER}'"
+    else:
+        # Fallback: check the full issuer string contains our CA name
+        assert EXPECTED_ISSUER in issuer_string, \
+            f"FAIL: '{EXPECTED_ISSUER}' not found in issuer string: '{issuer_string}'"
 
 
 def test_cert_key_size():
     """
     TEST 3: Verify the certificate uses a key of at least 2048 bits.
-    Key size determines how hard the cert is to break cryptographically.
-    Keys below 2048 bits fail modern compliance standards (PCI-DSS, NIST)
-    and are rejected by most browsers and operating systems today.
+    Key size determines cryptographic strength. Keys below 2048 bits fail
+    modern compliance standards (PCI-DSS, NIST) and are rejected by most
+    browsers and operating systems.
     """
     cert = load_cert(CERT_FILE)
 
-    # Extract the public key size in bits from the certificate
+    # Extract the public key size in bits
     key_size = cert.public_key().key_size
 
     assert key_size >= MIN_KEY_SIZE, \
@@ -268,12 +309,12 @@ def test_cert_expiry_warning():
     """
     TEST 4: Warn if the certificate expires within 30 days.
     Certificate outages are almost always preventable — they happen because
-    no one noticed a cert was about to expire. This test catches that window
-    early. Keyfactor Command automates this monitoring at enterprise scale.
+    no one noticed the cert was about to expire. This test catches that
+    window early so renewals happen before anything breaks.
     """
     cert = load_cert(CERT_FILE)
 
-    # Calculate days remaining until the certificate expires
+    # Calculate days remaining until expiry
     days_remaining = (
         cert.not_valid_after_utc - datetime.now(timezone.utc)
     ).days
@@ -285,17 +326,17 @@ def test_cert_expiry_warning():
 def test_cert_validity_period():
     """
     TEST 5: Verify the certificate was issued for the correct number of days.
-    Certs valid for too long (e.g. 10 years) are a security risk — they give
-    attackers a larger window if a key is compromised. CA/Browser Forum rules
-    cap public certs at 398 days. This confirms our cert matches policy.
+    Certs valid for too long are a security risk — a compromised key stays
+    dangerous for the entire validity window. CA/Browser Forum rules cap
+    public certs at 398 days. This test ensures our cert matches policy.
     """
     cert = load_cert(CERT_FILE)
 
-    # Calculate total days between the cert's start date and end date
+    # Calculate total validity in days (end date minus start date)
     total_days = (
         cert.not_valid_after_utc - cert.not_valid_before_utc
     ).days
 
-    # Allow a 1-day buffer for timezone and rounding differences
+    # Allow 1 day buffer for timezone and rounding edge cases
     assert abs(total_days - CERT_VALIDITY_DAYS) <= 1, \
         f"FAIL: Cert is valid for {total_days} days — expected {CERT_VALIDITY_DAYS}"
