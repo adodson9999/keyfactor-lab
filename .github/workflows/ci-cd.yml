@@ -1,0 +1,144 @@
+# ─────────────────────────────────────────────────────────────────
+# Keyfactor Lab — Certificate Test Pipeline
+# ─────────────────────────────────────────────────────────────────
+# This workflow automatically runs our certificate tests on 3
+# different operating systems every time code is pushed to GitHub.
+#
+# GitHub spins up a fresh virtual machine for each OS, installs
+# all dependencies, and runs pytest — exactly like running it
+# manually on your laptop, but automated and across all platforms.
+# ─────────────────────────────────────────────────────────────────
+
+# The name that appears in the GitHub Actions tab of your repo
+name: Certificate Test Suite
+
+# ── TRIGGERS ─────────────────────────────────────────────────────
+# Defines WHEN this pipeline runs automatically
+on:
+
+  # Run every time code is pushed to the main branch
+  push:
+    branches: [ main ]
+
+  # Run every time a Pull Request is opened or updated against main
+  pull_request:
+    branches: [ main ]
+
+  # Allow manually triggering the pipeline from the GitHub UI
+  # Useful for running tests on demand without pushing code
+  workflow_dispatch:
+
+# ── JOBS ─────────────────────────────────────────────────────────
+# A job is one unit of work — here we have one job that runs
+# on multiple operating systems in parallel
+jobs:
+
+  test:
+    # A human-readable name shown in the GitHub Actions dashboard
+    name: "Run Tests on ${{ matrix.os }}"
+
+    # ── MATRIX STRATEGY ────────────────────────────────────────
+    # This is the key feature — 'matrix' tells GitHub to run this
+    # job multiple times, once for each value in the list.
+    # GitHub spins up a separate VM for each OS simultaneously.
+    strategy:
+
+      # If one OS fails, continue running tests on the other OSes
+      # This way you always get results for ALL platforms, not just
+      # the ones that ran before the first failure
+      fail-fast: false
+
+      matrix:
+        # The three operating systems to test on — GitHub provides
+        # these as pre-built cloud VMs at no cost
+        os:
+          - ubuntu-latest    # Linux (Ubuntu) — most common server OS
+          - windows-latest   # Windows — matches your local VM environment
+          - macos-latest     # macOS — matches your development machine
+
+        # The Python versions to test against
+        # Testing multiple versions ensures compatibility
+        python-version:
+          - "3.11"
+          - "3.12"
+
+    # Tell GitHub which OS to use for this run of the job
+    # matrix.os is replaced with each value from the list above
+    runs-on: ${{ matrix.os }}
+
+    # ── STEPS ──────────────────────────────────────────────────
+    # Steps run in order on the VM — each step is one action
+    steps:
+
+      # STEP 1 — Check out your code from GitHub onto the VM
+      # Without this, the VM has no access to your files
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # STEP 2 — Install the Python version we want to test with
+      # actions/setup-python handles downloading and configuring Python
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # STEP 3 — Install OpenSSL on Linux
+      # Ubuntu VMs don't always have OpenSSL pre-installed
+      # The 'if' condition means this step ONLY runs on Ubuntu
+      - name: Install OpenSSL (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y openssl
+
+      # STEP 4 — Install OpenSSL on Windows
+      # Windows VMs need OpenSSL installed via Chocolatey (Windows package manager)
+      # The 'if' condition means this step ONLY runs on Windows
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        run: choco install openssl -y
+
+      # STEP 5 — Verify OpenSSL is installed and show its version
+      # This is a sanity check — if OpenSSL isn't found, we know immediately
+      # 'shell: bash' means use bash even on Windows (GitHub provides Git Bash)
+      - name: Verify OpenSSL installation
+        shell: bash
+        run: openssl version
+
+      # STEP 6 — Upgrade pip (Python's package installer) to latest version
+      # This avoids compatibility warnings during package installation
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      # STEP 7 — Install all Python packages our test script needs
+      # pytest is the testing framework
+      # cryptography is the library that parses certificate files
+      # pytest-html generates a nice HTML report of the test results
+      - name: Install Python dependencies
+        run: pip install pytest cryptography pytest-html
+
+      # STEP 8 — Run the actual tests and generate reports
+      # -v = verbose output (shows each test name and pass/fail)
+      # --tb=short = show short traceback if a test fails
+      # --html = generate an HTML report we can download and view
+      # The report filename includes the OS and Python version so
+      # reports from different VMs don't overwrite each other
+      - name: Run certificate tests
+        run: >
+          pytest test_certs.py -v
+          --tb=short
+          --html=report-${{ matrix.os }}-py${{ matrix.python-version }}.html
+          --self-contained-html
+
+      # STEP 9 — Upload the HTML test report as a downloadable artifact
+      # After the pipeline runs, you can download these reports from
+      # the GitHub Actions tab to see detailed results for each OS
+      # 'if: always()' means upload the report even if tests failed
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          # Name the artifact so you know which OS it came from
+          name: test-report-${{ matrix.os }}-py${{ matrix.python-version }}
+          # The HTML file generated by pytest-html in the step above
+          path: report-${{ matrix.os }}-py${{ matrix.python-version }}.html
+          # Keep the report for 30 days before GitHub auto-deletes it
+          retention-days: 30
