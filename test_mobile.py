@@ -10,10 +10,6 @@ then opens it in an emulated mobile browser and checks for SSL errors.
 Run with: pytest test_mobile.py -v
 Requires: pip install pytest playwright pytest-playwright
           playwright install chromium
-          
-          
-          
-Update thsi to allow the chnage
 """
 
 # subprocess runs terminal commands from Python — used for OpenSSL and server
@@ -178,7 +174,7 @@ def start_https_server():
             self.end_headers()
             self.wfile.write(b"""
                 <html>
-                  <head><title>Keyfactor Lab — Cert Test</title></head>
+                  <head><title>Keyfactor Lab - Cert Test</title></head>
                   <body>
                     <h1>Certificate Test Server</h1>
                     <p>If you can read this, the certificate was accepted.</p>
