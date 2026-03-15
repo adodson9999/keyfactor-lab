@@ -1,28 +1,28 @@
 # ─────────────────────────────────────────────────────────────────
-# macos.yml — Runs certificate tests on macOS ONLY
+# mobile.yml — Certificate Tests on Simulated Mobile Devices
 # ─────────────────────────────────────────────────────────────────
 # Triggered by:
-#   1. Push to ci/macos branch
-#   2. Pull request targeting ci/macos
+#   1. Push to ci/mobile branch
+#   2. Pull request targeting ci/mobile
 #   3. Manual trigger from GitHub Actions UI
 #   4. Called directly by all_platforms.yml (workflow_call)
 # ─────────────────────────────────────────────────────────────────
 
-name: "CI — macOS"
+name: "CI — Mobile Devices (Emulated)"
 
 on:
   push:
-    branches: [ ci/macos ]
+    branches: [ ci/mobile ]
   pull_request:
-    branches: [ ci/macos ]
+    branches: [ ci/mobile ]
   workflow_dispatch:
   # workflow_call makes this reusable — all_platforms.yml can call it directly
   workflow_call:
 
 jobs:
-  test-macos:
-    name: "macOS — Python ${{ matrix.python-version }}"
-    runs-on: macos-latest
+  test-mobile:
+    name: "Mobile Emulation — Python ${{ matrix.python-version }}"
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -34,20 +34,26 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y openssl
       - name: Verify OpenSSL
         run: openssl version
-      - name: Install dependencies
-        run: pip install pytest cryptography pytest-html
-      - name: Run certificate tests
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install Python dependencies
+        run: pip install pytest cryptography pytest-html playwright pytest-playwright
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+      - name: Run mobile device tests
         run: >
-          pytest test_certs.py -v
+          pytest test_mobile.py -v
           --tb=short
-          --html=report-macos-py${{ matrix.python-version }}.html
+          --html=report-mobile-py${{ matrix.python-version }}.html
           --self-contained-html
       - name: Upload test report
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: report-macos-py${{ matrix.python-version }}
-          path: report-macos-py${{ matrix.python-version }}.html
+          name: report-mobile-py${{ matrix.python-version }}
+          path: report-mobile-py${{ matrix.python-version }}.html
           retention-days: 30

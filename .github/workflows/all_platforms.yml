@@ -1,117 +1,120 @@
 # ─────────────────────────────────────────────────────────────────
-# all_platforms.yml — Runs certificate tests on ALL platforms
-# Triggered when code is pushed to ci/all-platforms OR main
-# This is the master pipeline — spins up 6 VMs simultaneously
+# all_platforms.yml — Master Pipeline
+# ─────────────────────────────────────────────────────────────────
+# This is the master pipeline. Instead of duplicating steps, it
+# calls each platform's individual workflow directly using
+# GitHub's workflow_call feature.
+#
+# HOW TO ADD A NEW PLATFORM:
+#   1. Create your new workflow file (e.g. .github/workflows/myplatform.yml)
+#   2. Add 'workflow_call:' to its 'on:' trigger section
+#   3. Add a new job below following the same pattern as the others
+#   4. That's it — the new platform will run as part of this pipeline
+#
+# Current platforms called:
+#   - macos.yml       → macOS latest
+#   - windows.yml     → Windows latest
+#   - linux.yml       → Ubuntu latest
+#   - mobile.yml      → Mobile device emulation (iPhone, Android, iPad)
 # ─────────────────────────────────────────────────────────────────
 
 name: "CI — All Platforms"
 
 on:
-  # Triggers on the ci/all-platforms branch
+  # Triggers on push to ci/all-platforms or main
   push:
     branches: [ ci/all-platforms, main ]
-  # Also triggers on pull requests targeting main
+  # Triggers on pull requests targeting main
   pull_request:
     branches: [ main ]
   # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
+    inputs:
+      # ── HOW TO ADD A PLATFORM VIA MANUAL TRIGGER ──────────────
+      # When triggering manually from GitHub UI, you can choose
+      # which platforms to run using the checkboxes below.
+      # To add a new platform: add a new boolean input here AND
+      # add a corresponding job below that checks this input.
+      # ──────────────────────────────────────────────────────────
+      run_macos:
+        description: "Run macOS tests"
+        type: boolean
+        default: true
+      run_windows:
+        description: "Run Windows tests"
+        type: boolean
+        default: true
+      run_linux:
+        description: "Run Linux tests"
+        type: boolean
+        default: true
+      run_mobile:
+        description: "Run Mobile emulation tests"
+        type: boolean
+        default: true
 
+# ── JOBS ─────────────────────────────────────────────────────────
+# Each job calls one platform workflow using 'uses'.
+# The format is: uses: ./.github/workflows/FILENAME.yml
+# This means "call this workflow file from the same repo"
+#
+# 'if' conditions check:
+#   - github.event_name != 'workflow_dispatch' means always run on push/PR
+#   - inputs.run_X == true means run if manually selected in the UI
+# This way push/PR always runs everything, but manual triggers are selective.
+# ─────────────────────────────────────────────────────────────────
 jobs:
-  test-all:
-    name: "${{ matrix.os }} — Python ${{ matrix.python-version }}"
 
-    strategy:
-      # Never stop early — always get results from ALL platform/version combos
-      fail-fast: false
+  # ── macOS ───────────────────────────────────────────────────────
+  # Calls macos.yml — runs on every push/PR, or when manually selected
+  # TO ADD A NEW PLATFORM: copy this block and change the name/uses/input
+  macos:
+    name: "macOS Pipeline"
+    if: github.event_name != 'workflow_dispatch' || inputs.run_macos == true
+    uses: ./.github/workflows/macos.yml
 
-      matrix:
-        # GitHub spins up one VM for every combination below
-        # 3 operating systems × 2 Python versions = 6 VMs running simultaneously
-        os:
-          - macos-latest        # Apple macOS
-          - windows-latest      # Microsoft Windows
-          - ubuntu-latest       # Linux (Ubuntu)
-        python-version:
-          - "3.11"
-          - "3.12"
+  # ── Windows ─────────────────────────────────────────────────────
+  windows:
+    name: "Windows Pipeline"
+    if: github.event_name != 'workflow_dispatch' || inputs.run_windows == true
+    uses: ./.github/workflows/windows.yml
 
-    # The OS for each VM comes from the matrix above
-    runs-on: ${{ matrix.os }}
+  # ── Linux ───────────────────────────────────────────────────────
+  linux:
+    name: "Linux Pipeline"
+    if: github.event_name != 'workflow_dispatch' || inputs.run_linux == true
+    uses: ./.github/workflows/linux.yml
 
-    steps:
-      # Check out your repo code onto the VM
-      - name: Checkout repository
-        uses: actions/checkout@v4
+  # ── Mobile ──────────────────────────────────────────────────────
+  mobile:
+    name: "Mobile Pipeline"
+    if: github.event_name != 'workflow_dispatch' || inputs.run_mobile == true
+    uses: ./.github/workflows/mobile.yml
 
-      # Install the correct Python version on this VM
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      # Install OpenSSL on Linux only
-      # 'if: runner.os == Linux' means this step is skipped on macOS and Windows
-      - name: Install OpenSSL (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y openssl
-
-      # Install OpenSSL on Windows only
-      # 'if: runner.os == Windows' means this step is skipped on macOS and Linux
-      - name: Install OpenSSL (Windows)
-        if: runner.os == 'Windows'
-        run: choco install openssl -y
-
-      # Verify OpenSSL is available — use bash shell so it works on all 3 OSes
-      - name: Verify OpenSSL
-        shell: bash
-        run: openssl version
-
-      # Upgrade pip to avoid compatibility warnings
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
-      # Install all Python packages needed by the test script
-      - name: Install dependencies
-        run: pip install pytest cryptography pytest-html
-
-      # Run all 5 certificate tests
-      # The report filename includes OS and Python version so reports
-      # from all 6 VMs are uniquely named and don't overwrite each other
-      - name: Run certificate tests
-        shell: bash
-        run: >
-          pytest test_certs.py -v
-          --tb=short
-          --html=report-${{ matrix.os }}-py${{ matrix.python-version }}.html
-          --self-contained-html
-
-      # Upload each VM's report as a downloadable artifact on GitHub
-      - name: Upload test report
-        uses: actions/upload-artifact@v4
-        if: always()             # Upload even if some tests failed
-        with:
-          name: report-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: report-${{ matrix.os }}-py${{ matrix.python-version }}.html
-          retention-days: 30
-
-  # ── SUMMARY JOB ──────────────────────────────────────────────
-  # This job runs AFTER all the test jobs finish
-  # It posts a summary showing pass/fail for every platform combo
+  # ── Summary ─────────────────────────────────────────────────────
+  # Runs after ALL platform jobs finish and prints a status summary.
+  # 'needs' lists every job above — this job waits for all of them.
+  # if: always() means this runs even if some platform jobs failed.
+  #
+  # TO ADD A NEW PLATFORM: add its job name to the 'needs' list below
   summary:
     name: "Pipeline Summary"
     runs-on: ubuntu-latest
-
-    # Wait for all test jobs to complete before running this
-    needs: test-all
-
-    # Run this even if some test jobs failed — we want the summary regardless
+    needs: [ macos, windows, linux, mobile ]
     if: always()
-
     steps:
       - name: Print summary
         run: |
-          echo "================================================"
-          echo "  Keyfactor Lab — Certificate Test Pipeline"
-          echo "  All platform results collected."
-          echo "  Download artifacts above to view HTML reports."
-          echo "================================================"
+          echo "============================================"
+          echo "  Keyfactor Lab — All Platforms Complete"
+          echo "============================================"
+          echo "  Platforms run:"
+          echo "    macOS   : ${{ needs.macos.result }}"
+          echo "    Windows : ${{ needs.windows.result }}"
+          echo "    Linux   : ${{ needs.linux.result }}"
+          echo "    Mobile  : ${{ needs.mobile.result }}"
+          echo "============================================"
+          echo ""
+          echo "  Download HTML reports from the"
+          echo "  Artifacts section of each pipeline run."
+          echo "============================================"

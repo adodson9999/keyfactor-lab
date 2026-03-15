@@ -1,66 +1,54 @@
 # ─────────────────────────────────────────────────────────────────
 # linux.yml — Runs certificate tests on Linux (Ubuntu) ONLY
-# Triggered when code is pushed to the ci/linux branch
+# ─────────────────────────────────────────────────────────────────
+# Triggered by:
+#   1. Push to ci/linux branch
+#   2. Pull request targeting ci/linux
+#   3. Manual trigger from GitHub Actions UI
+#   4. Called directly by all_platforms.yml (workflow_call)
 # ─────────────────────────────────────────────────────────────────
 
 name: "CI — Linux"
 
 on:
-  # Only triggers when the ci/linux branch receives a push
   push:
     branches: [ ci/linux ]
-  # Also triggers on pull requests targeting ci/linux
   pull_request:
     branches: [ ci/linux ]
-  # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
+  # workflow_call makes this reusable — all_platforms.yml can call it directly
+  workflow_call:
 
 jobs:
   test-linux:
     name: "Linux — Python ${{ matrix.python-version }}"
-    runs-on: ubuntu-latest       # GitHub spins up an Ubuntu Linux VM
-
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false           # Keep running even if one version fails
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-
     steps:
-      # Check out your repo code onto the Ubuntu VM
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      # Install the Python version being tested
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      # Ubuntu needs OpenSSL installed explicitly via apt
-      # apt-get is Ubuntu's built-in package manager
       - name: Install OpenSSL (Linux)
         run: sudo apt-get update && sudo apt-get install -y openssl
-
-      # Verify OpenSSL installed correctly
       - name: Verify OpenSSL
         run: openssl version
-
-      # Install Python test dependencies
       - name: Install dependencies
         run: pip install pytest cryptography pytest-html
-
-      # Run the certificate tests and generate an HTML report
       - name: Run certificate tests
         run: >
           pytest test_certs.py -v
           --tb=short
           --html=report-linux-py${{ matrix.python-version }}.html
           --self-contained-html
-
-      # Upload the HTML report so it can be downloaded from GitHub
       - name: Upload test report
         uses: actions/upload-artifact@v4
-        if: always()             # Upload even if tests failed
+        if: always()
         with:
           name: report-linux-py${{ matrix.python-version }}
           path: report-linux-py${{ matrix.python-version }}.html

@@ -1,57 +1,46 @@
 # ─────────────────────────────────────────────────────────────────
 # windows.yml — Runs certificate tests on Windows ONLY
-# Triggered when code is pushed to the ci/windows branch
+# ─────────────────────────────────────────────────────────────────
+# Triggered by:
+#   1. Push to ci/windows branch
+#   2. Pull request targeting ci/windows
+#   3. Manual trigger from GitHub Actions UI
+#   4. Called directly by all_platforms.yml (workflow_call)
 # ─────────────────────────────────────────────────────────────────
 
 name: "CI — Windows"
 
 on:
-  # Only triggers when the ci/windows branch receives a push
   push:
     branches: [ ci/windows ]
-  # Also triggers on pull requests targeting ci/windows
   pull_request:
     branches: [ ci/windows ]
-  # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
+  # workflow_call makes this reusable — all_platforms.yml can call it directly
+  workflow_call:
 
 jobs:
   test-windows:
     name: "Windows — Python ${{ matrix.python-version }}"
-    runs-on: windows-latest      # GitHub spins up a Windows Server VM
-
+    runs-on: windows-latest
     strategy:
-      fail-fast: false           # Keep running even if one version fails
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-
     steps:
-      # Check out your repo code onto the Windows VM
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      # Install the Python version being tested
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      # Windows doesn't have OpenSSL by default — install via Chocolatey
-      # Chocolatey is the Windows equivalent of brew on macOS
       - name: Install OpenSSL (Windows)
         run: choco install openssl -y
-
-      # Verify OpenSSL installed correctly — use bash shell for consistency
       - name: Verify OpenSSL
         shell: bash
         run: openssl version
-
-      # Install Python test dependencies
       - name: Install dependencies
         run: pip install pytest cryptography pytest-html
-
-      # Run the certificate tests and generate an HTML report
-      # shell: bash ensures consistent command syntax across platforms
       - name: Run certificate tests
         shell: bash
         run: >
@@ -59,11 +48,9 @@ jobs:
           --tb=short
           --html=report-windows-py${{ matrix.python-version }}.html
           --self-contained-html
-
-      # Upload the HTML report so it can be downloaded from GitHub
       - name: Upload test report
         uses: actions/upload-artifact@v4
-        if: always()             # Upload even if tests failed
+        if: always()
         with:
           name: report-windows-py${{ matrix.python-version }}
           path: report-windows-py${{ matrix.python-version }}.html
