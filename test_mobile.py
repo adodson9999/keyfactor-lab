@@ -10,6 +10,9 @@ then opens it in an emulated mobile browser and checks for SSL errors.
 Run with: pytest test_mobile.py -v
 Requires: pip install pytest playwright pytest-playwright
           playwright install chromium
+          
+          
+Add to test
 """
 
 # subprocess runs terminal commands from Python — used for OpenSSL and server
